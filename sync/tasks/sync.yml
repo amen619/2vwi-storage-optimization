@@ -46,21 +46,32 @@
         path: 'C:\temp\Robocopy'
         state: directory
 
-    # 11. Run Robocopy for each source-to-destination pair (excluding symlinks)
-    - name: Run Robocopy for each source-to-destination pair (excluding symlinks)
-      win_shell: |
-        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        Robocopy.exe {{ item.0 }}:\ {{ item.1 }}:\ /E /COPYALL /B /Z /R:5 /W:30 /XO /XN /XC /XJ /DCOPY:DAT /XD "$RECYCLE.BIN" "System Volume Information" /LOG:C:\temp\Robocopy\initial_robocopy_result_{{ item.0 }}_$timestamp.txt
-      with_together:
-        - "{{ source_drives_list }}"
-        - "{{ destination_drives_list }}"
-      register: robocopy_results
-      async: 172800         # Run up to 48 hours (2 days)
-      poll: 30              # Poll every 30 seconds
-      retries: 5            # Retry up to 5 times if failed
-      delay: 60             # Wait 60 seconds between retries
-      until: robocopy_results.rc in [0, 1, 2, 3, 8, 9, 10, 11]
-      failed_when: robocopy_results.rc not in [0, 1, 2, 3, 8, 9, 10, 11]
+    # 11. Create a scheduled task for Robocopy for each source-to-destination pair
+    - name: Create scheduled task for Robocopy as SYSTEM
+      win_scheduled_task:
+        name: "Robocopy_{{ item.0 }}_to_{{ item.1 }}"
+
+        description: "Robocopy from {{ item.0 }} to {{ item.1 }} as SYSTEM"
+        actions:
+          - path: 'C:\Windows\System32\Robocopy.exe'
+            arguments: '{{ item.0 }}:\ {{ item.1 }}:\ /E /COPYALL /B /Z /R:5 /W:30 /XO /XN /XC /XJ /DCOPY:DAT /XD "$RECYCLE.BIN" "System Volume Information" /LOG:C:\temp\Robocopy\initial_robocopy_result_{{ item.0 }}_%date:~0,4%%date:~5,2%%date:~8,2%_%time:~0,2%%time:~3,2%%time:~6,2%.txt'
+        username: "SYSTEM"
+        run_level: highest
+        state: present
+        enabled: yes
+        logon_type: service_account
+        triggers:
+          - type: once
+            start_boundary: "{{ (ansible_date_time.iso8601 | to_datetime('%Y-%m-%dT%H:%M:%SZ')).strftime('%Y-%m-%dT%H:%M:%S') }}"
+      loop: "{{ source_drives_list | zip(destination_drives_list) | list }}"
+
+    # 11b. Start the scheduled task immediately
+    - name: Start scheduled Robocopy task
+      win_scheduled_task:
+        name: "Robocopy_{{ item.0 }}_to_{{ item.1 }}"
+
+        state: running
+      loop: "{{ source_drives_list | zip(destination_drives_list) | list }}"
 
     # 12. Debug Robocopy results
     - name: Debug Robocopy results
