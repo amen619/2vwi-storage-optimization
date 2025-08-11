@@ -1,0 +1,101 @@
+---
+- name: Manage Windows drives
+  block:
+    - name: Include list_disk.yml to load disk information
+      import_tasks: list_disk.yml
+
+    - name: Debug source_disk_letter from list_disk.yml
+      debug:
+        var: source_disk_letter
+
+    - name: Ensure source_disk_letter is not empty
+      fail:
+        msg: "The source_disk_letter variable is empty. Ensure it is defined and contains valid data."
+      when: source_disk_letter | length == 0
+
+    - name: Convert source_disk_letter to a list if it is a string
+      set_fact:
+        source_disk_list: "{{ source_disk_letter.split(',') if source_disk_letter is string else source_disk_letter }}"
+      when: source_disk_letter is defined
+
+    - name: Debug source_disk_list
+      debug:
+        var: source_disk_list
+
+    - name: Filter out missing disks from source_disk_list
+      set_fact:
+        valid_disks: "{{ source_disk_list | dict2items | selectattr('value', 'defined') | list }}"
+
+    - name: Debug valid_disks
+      debug:
+        var: valid_disks
+
+    - name: Ensure valid_disks is not empty
+      fail:
+        msg: "No valid disks found. Ensure the source_disk_list contains valid disk data."
+      when: valid_disks | length == 0
+
+    - name: Extract valid UsedGB values for all drives
+      set_fact:
+        valid_used_sizes: "{{ valid_disks | map(attribute='value') | map('int', default=0) | list }}"
+      when: valid_disks | length > 0
+
+    - name: Debug valid_used_sizes before calculation
+      debug:
+        var: valid_used_sizes
+
+    - name: Ensure valid_used_sizes is not empty
+      fail:
+        msg: "No valid UsedGB values found. Ensure the disks have valid UsedGB data."
+      when: valid_used_sizes | length == 0
+
+    - name: Calculate 25% extra space for each disk using PowerShell
+      win_shell: |
+        $validUsedSizes = @( {{ valid_used_sizes | join(',') }} )
+        $newDiskSizes = @()
+        foreach ($size in $validUsedSizes) {
+            $newSize = [math]::Ceiling($size * 1.25)
+            $newDiskSizes += $newSize
+        }
+        $newDiskSizes -join ","
+      register: new_disk_sizes_output
+      when: valid_used_sizes | length > 0
+
+    - name: Parse new disk sizes from PowerShell output
+      set_fact:
+        new_disk_sizes: "{{ new_disk_sizes_output.stdout.split(',') | map('int') | list }}"
+      when: valid_used_sizes | length > 0
+
+    - name: Debug new disk sizes
+      debug:
+        msg: >
+          Calculated new disk sizes with 25% extra space: {{ new_disk_sizes }}
+
+    - name: Display new disk sizes
+      debug:
+        msg: >
+          Disk {{ item.0 }}: UsedGB={{ item.1 }} GB, New Size={{ item.2 }} GB
+      loop: "{{ valid_disks | zip(valid_used_sizes, new_disk_sizes) | list }}"
+      when: valid_used_sizes | length > 0
+
+    - name: Create dest_disk_info with new disk sizes
+      set_fact:
+        dest_disk_info: >
+          {{
+            dict(valid_disks | map(attribute='key') | zip(new_disk_sizes))
+          }}
+      when: valid_used_sizes | length > 0
+
+    - name: Debug dest_disk_info
+      debug:
+        var: dest_disk_info
+
+    - name: Attach new disk using VRO process
+      debug:
+        msg: "Attaching new disk with sizes: {{ dest_disk_info }} (VRO process placeholder)"
+      when: valid_used_sizes | length > 0
+
+    - name: Start robocopy process
+      debug:
+        msg: "Starting robocopy process after attaching new disk (placeholder)"
+      when: valid_used_sizes | length > 0

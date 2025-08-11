@@ -1,0 +1,133 @@
+---
+- name: Use a single block for all main modules/tasks
+  block:
+    # 1. Debug initial source and destination drives
+    - name: Debug source and destination drives (initial)
+      debug:
+        msg: >
+          Source drives: {{ source_drives }}
+          Destination drives: {{ destination_drives }}
+
+    # 2. Normalize source_drives to a list
+    - name: Ensure source_drives_list is always a list
+      set_fact:
+        source_drives_list: >
+          {{
+            source_drives.values() | list if source_drives is mapping else
+            source_drives if source_drives is iterable else []
+          }}
+
+    # 3. Normalize destination_drives to a list
+    - name: Ensure destination_drives_list is always a list
+      set_fact:
+        destination_drives_list: >
+          {{
+            destination_drives.values() | list if destination_drives is mapping else
+            destination_drives if destination_drives is iterable else []
+          }}
+
+    # 4. Debug normalized lists
+    - name: Debug source and destination drives (after conversion)
+      debug:
+        msg: >
+          Source drives list: {{ source_drives_list }}
+          Destination drives list: {{ destination_drives_list }}
+
+    # 5. Fail if drive counts do not match
+    - name: Fail if source and destination drive counts do not match
+      fail:
+        msg: >
+          The number of source drives ({{ source_drives_list | length }}) does not match the number of destination drives ({{ destination_drives_list | length }}).
+      when: source_drives_list | length != destination_drives_list | length
+
+    # 10. Ensure Robocopy log directory exists
+    - name: Ensure C:\temp\Robocopy directory exists
+      win_file:
+        path: 'C:\temp\Robocopy'
+        state: directory
+
+    # 11. Run Robocopy for each source-to-destination pair (excluding symlinks)
+    - name: Run Robocopy for each source-to-destination pair (excluding symlinks)
+      win_shell: |
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        Robocopy.exe {{ item.0 }}:\ {{ item.1 }}:\ /E /COPYALL /B /Z /R:5 /W:30 /XO /XN /XC /XJ /DCOPY:DAT /XD "$RECYCLE.BIN" "System Volume Information" /LOG:C:\temp\Robocopy\initial_robocopy_result_{{ item.0 }}_$timestamp.txt
+      with_together:
+        - "{{ source_drives_list }}"
+        - "{{ destination_drives_list }}"
+      register: robocopy_results
+      async: 172800         # Run up to 48 hours (2 days)
+      poll: 30              # Poll every 30 seconds
+      retries: 5            # Retry up to 5 times if failed
+      delay: 60             # Wait 60 seconds between retries
+      until: robocopy_results.rc in [0, 1, 2, 3, 8, 9, 10, 11]
+      failed_when: robocopy_results.rc not in [0, 1, 2, 3, 8, 9, 10, 11]
+
+    # 12. Debug Robocopy results
+    - name: Debug Robocopy results
+      debug:
+        msg: |
+          Robocopy completed with return code {{ item.rc }}.
+          Command: {{ item.cmd }}
+          Output: {{ item.stdout }}
+      loop: "{{ robocopy_results.results }}"
+
+    # 13. Recreate all symlinked files and directories from source to destination
+    - name: Recreate all symlinked files and directories from source to destination
+      win_shell: |
+        $source = "{{ item.0 }}:\\"
+        $dest = "{{ item.1 }}:\\"
+
+        if (-not (Test-Path $dest)) {
+            New-Item -ItemType Directory -Path $dest | Out-Null
+        }
+
+        Get-ChildItem -Path $source -Recurse -Attributes ReparsePoint | ForEach-Object {
+            $linkName = $_.FullName.Substring($source.Length)
+            $linkTarget = (Get-Item $_.FullName).Target
+            if ($linkTarget -is [System.Array]) {
+                $linkTarget = $linkTarget[0]
+            }
+            $destLink = Join-Path $dest $linkName
+            $destDir = Split-Path -Path $destLink -Parent
+
+            if (-not (Test-Path $destDir)) {
+                New-Item -ItemType Directory -Path $destDir | Out-Null
+            }
+
+            if (Test-Path $linkTarget) {
+                try {
+                    New-Item -ItemType SymbolicLink -Path $destLink -Target $linkTarget -Force | Out-Null
+                    Write-Host "Created symlink: $destLink -> $linkTarget"
+                } catch {
+                    Write-host "Failed to create symlink: $destLink -> $linkTarget"
+                }
+            } else {
+                Write-Host "Skipped symlink: $destLink -> $linkTarget (target does not exist)"
+            }
+        }
+      with_together:
+        - "{{ source_drives_list }}"
+        - "{{ destination_drives_list }}"
+      ignore_errors: true
+
+    # 14. Mark initial sync job as completed for each source drive
+    - name: Mark initial sync job as completed for each source drive
+      win_command: cmd.exe /c "echo completed > C:\temp\Robocopy\initial_sync_completed_{{ item.0 }}.txt"
+      loop: "{{ source_drives_list }}"
+
+    # 15. End playbook with a successful message
+    - name: End playbook with a successful message
+      debug:
+        msg: "Initial sync playbook completed. You can now run the delta playbook for Robocopy after stopping all services."
+
+  rescue:
+    # 16. Handle Robocopy errors (debug)
+    - name: Handle Robocopy errors
+      debug:
+        msg: "An error occurred during Robocopy execution. Check the logs for details."
+
+    # 17. Fail the playbook due to Robocopy errors
+    - name: Fail the playbook due to Robocopy errors
+      fail:
+        msg: >
+          Robocopy execution failed. Review the logs for details and investigate the issue.

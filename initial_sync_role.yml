@@ -1,0 +1,5 @@
+---
+- name: Initial Sync Role
+  hosts: all
+  roles:
+    - sync

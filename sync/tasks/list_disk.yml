@@ -1,0 +1,103 @@
+---
+- name: List drives on Windows machines
+  block:
+    # Step 0: Display disk information for all disks
+    - name: Display disk information for all disks
+      win_shell: |
+        Get-Volume | Select-Object DriveLetter, 
+                                  @{Name="SizeGB";Expression={[math]::Round($_.Size/1GB, 2)}}, 
+                                  @{Name="UsedGB";Expression={[math]::Round(($_.Size - $_.SizeRemaining)/1GB, 2)}}, 
+                                  @{Name="FreeGB";Expression={[math]::Round($_.SizeRemaining/1GB, 2)}}, 
+                                  @{Name="UsedPercentage";Expression={[math]::Round((($_.Size - $_.SizeRemaining)/$_.Size)*100, 2)}} | 
+        Format-Table -AutoSize | Out-String
+      register: all_disk_info
+
+    - name: Print disk information for all disks
+      debug:
+        msg: |
+          Disk Information:
+          {{ all_disk_info.stdout }}
+
+    # Step 1: Check if source_disk_letter is defined and not empty
+    - name: Check if source_disk_letter is defined and not empty
+      when: source_disk_letter is not defined or source_disk_letter | length == 0
+      block:
+        - name: Display message about missing source_disk_letter
+          debug:
+            msg: "The source_disk_letter variable is not defined or does not contain any drive letter. Finishing the job successfully."
+
+        - name: End playbook execution
+          meta: end_play
+
+    - name: Debug source_disk_letter variable
+      debug:
+        var: source_disk_letter
+
+    - name: Convert source_disk_letter to a dictionary if it is a string
+      set_fact:
+        source_disk_letter: >
+          {{
+            { "disk1": source_disk_letter } if source_disk_letter is string else source_disk_letter
+          }}
+
+    - name: Debug source_disk_letter after conversion
+      debug:
+        var: source_disk_letter
+
+    - name: Stop playbook execution if source_disk_letter contains C drive
+      meta: end_play
+      when: >
+        (source_disk_letter is mapping and 'C' in source_disk_letter.values()) or
+        (source_disk_letter is string and source_disk_letter == 'C')
+
+    - name: Loop through each drive letter and get disk information
+      win_shell: |
+        $disk = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -eq "{{ item.value }}" -and $_.Name -ne "C" }
+        if ($disk) {
+          $partitions = Get-Partition -DriveLetter "{{ item.value }}"
+          $reservedPartitions = $partitions | Where-Object { $_.Type -eq "Reserved" }
+          $basicPartitions = $partitions | Where-Object { $_.Type -eq "Basic" }
+          if (($reservedPartitions.Count + $basicPartitions.Count) -gt 2) {
+            Write-Output "Drive {{ item.value }} contains more than two partitions of types Reserved and Basic."
+            exit 1
+          } else {
+            $disk | Select-Object Name, 
+                                  @{Name="UsedGB";Expression={[math]::Round($_.Used/1GB, 2)}}, 
+                                  @{Name="FreeGB";Expression={[math]::Round($_.Free/1GB, 2)}}, 
+                                  @{Name="SizeGB";Expression={[math]::Round(($_.Used + $_.Free)/1GB, 2)}} | 
+            ConvertTo-Json -Depth 2
+          }
+        } else {
+          Write-Output "Drive {{ item.value }} does not exist."
+        }
+      register: disk_info
+      loop: "{{ source_disk_letter | dict2items }}"
+      ignore_errors: true
+
+    - name: Parse and register disk information as variables
+      set_fact:
+        "{{ item.item.key }}": "{{ item.stdout | from_json }}"
+      loop: "{{ disk_info.results }}"
+      when: item.stdout is search('^{')
+      no_log: true
+
+    - name: Debug parsed disk information
+      debug:
+        var: disk_info.results
+
+    - name: Fail if source disk contains more than one Basic partition
+      win_shell: |
+        $letters = @({{ source_disk_letter.values() | map('to_json') | join(',') }})
+        foreach ($letter in $letters) {
+          $part = Get-Partition -DriveLetter $letter
+          if ($part) {
+            $diskNum = $part.DiskNumber
+            $basicParts = (Get-Partition -DiskNumber $diskNum | Where-Object { $_.Type -eq "Basic" })
+            if ($basicParts.Count -gt 1) {
+              Write-Error "Source disk for drive letter $letter contains more than one Basic partition (Verify Disks Partition Layout)."
+              exit 1
+            }
+          }
+        }
+      register: partition_check
+      failed_when: partition_check.rc != 0

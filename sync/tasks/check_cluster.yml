@@ -1,0 +1,10 @@
+---
+- name: Check for SCSI disks
+  win_command: powershell.exe "Get-Disk | Where-Object BusType -eq 'SCSI'"
+  register: scsi_disks
+
+- name: Fail if SCSI disk is attached
+  fail:
+    msg: "SCSI disk detected. Stopping the playbook."
+  when: scsi_disks.stdout != ""
+  

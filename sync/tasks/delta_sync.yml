@@ -1,0 +1,45 @@
+---
+- name: Run final robocopy jobs on all data disks
+  block:
+    - name: Validate source and destination drives
+      fail:
+        msg: "Source or destination drives are not defined. Ensure they are set in the inventory."
+      when: source_disk_letter is not defined or dest_disk_letter is not defined
+
+    - name: Prepare source and destination drive paths
+      set_fact:
+        source_drives: "{{ hostvars[inventory_hostname].source_disk_letter.values() | map('regex_replace', '^', 'D:\\') | list }}"
+        destination_drives: "{{ hostvars[inventory_hostname].dest_disk_letter.values() | map('regex_replace', '^', 'E:\\') | list }}"
+
+    - name: Debug source and destination drives
+      debug:
+        msg: >
+          Source Drives: {{ source_drives }}
+          Destination Drives: {{ destination_drives }}
+
+    - name: Run final robocopy jobs
+      win_shell: |
+        robocopy {{ item.0 }} {{ item.1 }} /MIR /R:5 /W:10 /LOG+:C:\robocopy_final.log
+      loop: "{{ source_drives | zip(destination_drives) | list }}"
+      register: robocopy_results
+      loop_control:
+        label: "Source: {{ item.0 }} -> Destination: {{ item.1 }}"
+
+    - name: Poll robocopy job results
+      debug:
+        msg: >
+          Robocopy job completed for Source: {{ item.item.0 }} -> Destination: {{ item.item.1 }}
+          Status: {{ 'Success' if item.rc == 0 else 'Failed with code ' + item.rc }}
+      loop: "{{ robocopy_results.results }}"
+      loop_control:
+        label: "Source: {{ item.item.0 }} -> Destination: {{ item.item.1 }}"
+
+    - name: Fail if any robocopy job failed
+      fail:
+        msg: >
+          One or more robocopy jobs failed. Check the log file at C:\robocopy_final.log for details.
+      when: robocopy_results.results | selectattr('rc', 'ne', 0) | list | length > 0
+
+    - name: Display success message
+      debug:
+        msg: "Final robocopy jobs completed successfully. Ready to execute swap_disk.yml."

@@ -1,0 +1,22 @@
+---
+- name: Windows Server Storage Optimizations
+  block:
+    - name: Check if Failover Cluster feature is installed
+      include_tasks: check_cluster.yml
+      register: cluster_feature
+
+    - name: List drives on Windows machine
+      include_tasks: list_disk.yml
+      when: cluster_feature.stdout.strip() == "False"
+
+    - name: Calculate new disk sizes
+      include_tasks: new_disk.yml
+      when: cluster_feature.stdout.strip() == "False"
+
+    - name: Initialize and format raw disks
+      include_tasks: initialize_disk.yml
+      when: cluster_feature.stdout.strip() == "False"
+
+    - name: Start Initial Robocopy Job
+      include_tasks: sync.yml
+      when: cluster_feature.stdout.strip() == "False"

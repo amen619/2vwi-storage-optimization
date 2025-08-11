@@ -1,0 +1,16 @@
+---
+# example 1
+- name: Execute inline PowerShell commands
+  win_shell: $prs = Get-Process | Where-Object { $_.ProcessName -eq "sensu-client" } ; Write-Output $prs
+  register: command_output
+
+- name: Display the command output
+  debug:
+    var: command_output.stdout_lines
+# example 2
+- name: Execute inline PowerShell commands 2
+  ansible.windows.win_powershell:
+    script: |
+      $disksp = Get-PSDrive C
+      Write-Output "C drive disk space details"
+      Write-Output $disksp

@@ -1,0 +1,5 @@
+---
+- name: Delta Sync Role
+  hosts: all
+  roles:
+    - delta_sync

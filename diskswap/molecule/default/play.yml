@@ -1,0 +1,17 @@
+---
+- name: Check Windows Server Reachability
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Ping Windows Server
+      win_ping:
+      register: ping_result
+
+    - name: Display Reachability Status
+      debug:
+        msg: >
+          {% if ping_result.ping is defined %}
+            Windows server is reachable.
+          {% else %}
+            Windows server is not reachable.
+          {% endif %}

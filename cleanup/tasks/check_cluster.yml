@@ -1,0 +1,14 @@
+---
+- name: List Available Drives on Windows Servers
+  block:
+    - name: Check if Failover Cluster feature is installed
+      win_command: powershell.exe "Get-WindowsFeature -Name Failover-Clustering | Select-Object -ExpandProperty Installed"
+      register: cluster_feature
+    - name: Display cluster feature details
+      debug:
+        var: cluster_feature.stdout
+    - name: Stop playbook if Failover Cluster is installed
+      assert:
+        that:
+          - cluster_feature.stdout.strip() == "False"
+        fail_msg: "Failover Cluster Role is installed. Stopping the playbook."

@@ -1,0 +1,60 @@
+---
+- name: Run PowerShell script on multiple servers and consolidate results
+  hosts: all  # Hosts will be provided by the inventory in the AWX template
+  gather_facts: false
+
+  vars:
+    output_file: "C:\\temp\\JavaSearchResults_MultipleServersDBLANS.csv"
+    temp_dir: "C:\\temp"
+
+  tasks:
+    - name: Ensure the temporary directory exists on each target host
+      win_file:
+        path: "{{ temp_dir }}"
+        state: directory
+
+    - name: Search for Java files on each host
+      win_shell: |
+        $hostname = $env:COMPUTERNAME
+        $results = @()
+        
+        Get-PSDrive -PSProvider FileSystem | ForEach-Object {
+            Get-ChildItem -Path "$($_.Root)" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match "java" } |
+            Select-Object @{Name="Hostname"; Expression={$hostname}}, Name, @{Name="FullPath"; Expression={$_.FullName}}, @{Name="Type"; Expression={if ($_.PSIsContainer) {"Directory"} else {"File"}}}
+        } | ForEach-Object { $results += $_ }
+
+        $results | Export-Csv -Path "{{ temp_dir }}\\JavaSearchResults.csv" -NoTypeInformation
+        Write-Host "Java search results saved to {{ temp_dir }}\\JavaSearchResults.csv"
+      args:
+        executable: powershell
+      register: java_search_results
+
+    - name: Copy results from each target host to WK2230
+      win_copy:
+        src: "{{ temp_dir }}\\JavaSearchResults.csv"
+        dest: "{{ temp_dir }}\\JavaSearchResults_{{ inventory_hostname }}.csv"
+      delegate_to: WK2230.danskenet.net
+
+    - name: Cleanup temporary files from target hosts
+      win_file:
+        path: "{{ temp_dir }}\\JavaSearchResults.csv"
+        state: absent
+
+    - name: Verify if the consolidated results exist on WK2230
+      win_stat:
+        path: "{{ temp_dir }}"
+      delegate_to: WK2230.danskenet.net
+      register: wk2230_dir_status
+
+    - name: Debug the WK2230 directory status
+      debug:
+        var: wk2230_dir_status
+
+    - name: Consolidate all results into a single CSV file on WK2230
+      win_shell: |
+        $outputFile = "{{ temp_dir }}\\JavaSearchResults_Consolidated.csv"
+        Get-ChildItem -Path "{{ temp_dir }}" -Filter "JavaSearchResults_*.csv" | ForEach-Object {
+            Import-Csv $_.FullName
+        } | Export-Csv -Path $outputFile -NoTypeInformation
+      delegate_to: WK2230.danskenet.net

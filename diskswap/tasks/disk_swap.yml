@@ -1,0 +1,50 @@
+---
+- name: Swap disk letters for data disks
+  block:
+    - name: Define the mapping of source to target drive letters
+      set_fact:
+        drive_letter_mapping:
+          D: P
+          E: Q
+          F: R
+          G: S
+          H: T
+
+    - name: Filter drive mappings based on source_disk_letter
+      set_fact:
+        filtered_drive_mapping: >
+          {{
+            drive_letter_mapping | dict2items | selectattr('key', 'equalto', source_disk_letter) | list
+          }}
+
+    - name: Ensure there is a valid mapping for the provided source_disk_letter
+      fail:
+        msg: "No valid mapping found for source_disk_letter: {{ source_disk_letter }}"
+      when: filtered_drive_mapping | length == 0
+
+    - name: Swap drive letters
+      win_shell: |
+        $sourceDrive = "{{ item.key }}:"
+        $targetDrive = "{{ item.value }}:"
+        $drive = Get-WmiObject -Query "SELECT * FROM Win32_Volume WHERE DriveLetter = '$sourceDrive'"
+        if ($drive -ne $null) {
+          try {
+            $drive.DriveLetter = $null
+            $drive.Put() | Out-Null
+            $drive.DriveLetter = $targetDrive
+            $drive.Put() | Out-Null
+            Write-Host "Successfully swapped $sourceDrive to $targetDrive"
+          } catch {
+            Write-Host "WARNING: Could not swap $sourceDrive to $targetDrive. Drive might be in use."
+          }
+        } else {
+          Write-Host "WARNING: Drive $sourceDrive not found."
+        }
+      loop: "{{ filtered_drive_mapping }}"
+      register: swap_results
+
+    - name: Debug swap results
+      debug:
+        msg: >
+          Drive {{ item.key }} successfully changed to {{ item.value }}
+      loop: "{{ filtered_drive_mapping }}"

@@ -1,0 +1,88 @@
+---
+- name: Robocopy Job with Polling for Multiple Drives
+  block:
+    - name: Debug source and destination drives (initial)
+      debug:
+        msg: >
+          Source drives: {{ source_drives }}
+          Destination drives: {{ destination_drives }}
+
+    - name: Fail if source and destination drive counts do not match
+      fail:
+        msg: >
+          The number of source drives ({{ source_drives | length }}) does not match the number of destination drives ({{ destination_drives | length }}).
+      when: source_drives | length != destination_drives | length
+
+    - name: Check if source drives exist
+      win_stat:
+        path: "{{ item }}:\\"
+      loop: "{{ source_drives }}"
+      register: source_drive_check
+
+    - name: Fail if any source drive does not exist
+      fail:
+        msg: >
+          One or more source drives do not exist. Ensure the following source drives are present:
+          {{ source_drives }}.
+      when: source_drive_check.results | selectattr('stat.exists', 'eq', false) | list | length > 0
+
+    - name: Check if destination drives exist
+      win_stat:
+        path: "{{ item }}:\\"
+      loop: "{{ destination_drives }}"
+      register: destination_drive_check
+
+    - name: Fail if any destination drive does not exist
+      fail:
+        msg: >
+          One or more destination drives do not exist. Ensure the following destination drives are present:
+          {{ destination_drives }}.
+      when: destination_drive_check.results | selectattr('stat.exists', 'eq', false) | list | length > 0
+
+    - name: Start Robocopy for each source-to-destination pair
+      win_command: >
+        Robocopy.exe {{ item.0 }}:\ {{ item.1 }}:\ /MIR /COPYALL /R:3 /W:10 /Z /ETA /LOG:{{ item.1 }}:\robocopy.log
+      with_together:
+        - "{{ source_drives }}"
+        - "{{ destination_drives }}"
+      register: robocopy_results
+      failed_when: robocopy_results.rc not in [0, 1, 3]
+
+    - name: Debug Robocopy results
+      debug:
+        var: robocopy_results
+
+    - name: Create marker file for each destination drive
+      win_command: >
+        cmd.exe /c "echo completed > {{ item.1 }}:\marker.txt"
+      with_together:
+        - "{{ source_drives }}"
+        - "{{ destination_drives }}"
+      when: robocopy_results.results | selectattr('item', 'equalto', item) | map(attribute='rc') | first in [0, 1, 3]
+
+    - name: Poll for Robocopy completion for all drives
+      win_command: >
+        cmd.exe /c "if exist {{ item.1 }}:\marker.txt (echo completed) else (echo in_progress)"
+      with_together:
+        - "{{ source_drives }}"
+        - "{{ destination_drives }}"
+      register: poll_results
+      retries: 5
+      delay: 60
+
+    - name: Debug poll results
+      debug:
+        var: poll_results
+
+    - name: Display Robocopy Job completion message for each drive
+      debug:
+        msg: >
+          Robocopy Job completed successfully from source drive {{ item.0 }} to destination drive {{ item.1 }}.
+      with_together:
+        - "{{ source_drives }}"
+        - "{{ destination_drives }}"
+
+  rescue:
+    - name: Handle Robocopy errors
+      debug:
+        msg: "An error occurred during Robocopy execution. Check the logs for details."

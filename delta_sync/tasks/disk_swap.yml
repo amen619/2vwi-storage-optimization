@@ -1,0 +1,106 @@
+---
+- name: Swap disk letters for data disks
+  block:
+    # Step 1: Define the pool of available drive letters
+    - name: Define the pool of available drive letters
+      set_fact:
+        drive_letter_pool:
+          - P
+          - Q
+          - R
+          - S
+          - T  # Add more letters as needed
+
+    # Step 2: Exclude source_disk_letter from the drive letter pool
+    - name: Exclude source_disk_letter from the drive letter pool
+      set_fact:
+        available_drive_letters: "{{ drive_letter_pool | difference([source_disk_letter]) }}"
+
+    # Step 3: Ensure there are available drive letters
+    - name: Ensure there are available drive letters
+      fail:
+        msg: "No available drive letters to swap with. Ensure the drive letter pool has free letters."
+      when: available_drive_letters | length == 0
+
+    # Step 4: Select the first available drive letter for swapping
+    - name: Select the first available drive letter for swapping
+      set_fact:
+        temp_drive_letter: "{{ available_drive_letters[0] }}"
+
+    # Step 5: Debug selected drive letters
+    - name: Debug selected drive letters
+      debug:
+        msg: >
+          Source drive: {{ source_disk_letter }}
+          Temporary drive: {{ temp_drive_letter }}
+          Destination drive: {{ dest_disk_letter }}
+
+    # Step 6: Change source_disk_letter (E) to a temporary letter (e.g., P)
+    - name: Change source disk letter to a temporary letter
+      win_shell: |
+        $sourceDrive = "{{ source_disk_letter }}:"
+        $tempDrive = "{{ temp_drive_letter }}:"
+        $drive = Get-WmiObject -Query "SELECT * FROM Win32_Volume WHERE DriveLetter = '$sourceDrive'"
+        if ($drive -ne $null) {
+          try {
+            $drive.DriveLetter = $null
+            $drive.Put() | Out-Null
+            $drive.DriveLetter = $tempDrive
+            $drive.Put() | Out-Null
+            Write-Host "Successfully changed $sourceDrive to $tempDrive"
+          } catch {
+            Write-Host "WARNING: Could not change $sourceDrive to $tempDrive. Drive might be in use."
+          }
+        } else {
+          Write-Host "WARNING: Drive $sourceDrive not found."
+        }
+
+    # Step 8: Change destination disk letter (U) to source disk letter (E)
+    - name: Change destination disk letter to source disk letter
+      win_shell: |
+        $destDrive = "{{ dest_disk_letter }}:"
+        $sourceDrive = "{{ source_disk_letter }}:"
+        $drive = Get-WmiObject -Query "SELECT * FROM Win32_Volume WHERE DriveLetter = '$destDrive'"
+        if ($drive -ne $null) {
+          try {
+            $drive.DriveLetter = $null
+            $drive.Put() | Out-Null
+            $drive.DriveLetter = $sourceDrive
+            $drive.Put() | Out-Null
+            Write-Host "Successfully changed $destDrive to $sourceDrive"
+          } catch {
+            Write-Host "WARNING: Could not change $destDrive to $sourceDrive. Drive might be in use."
+          }
+        } else {
+          Write-Host "WARNING: Drive $destDrive not found."
+        }
+
+    # Step 9: Debug final drive letter assignment
+    - name: Debug final drive letter assignment
+      debug:
+        msg: >
+          Successfully swapped source drive {{ source_disk_letter }} with destination drive {{ dest_disk_letter }}.
+
+    # Step 10: Display final drive information
+    - name: Display final drive information
+      win_shell: |
+        Get-Volume | Select-Object DriveLetter, @{Name="TotalSize(GB)";Expression={[math]::Round($_.Size/1GB, 2)}}, @{Name="UsedSize(GB)";Expression={[math]::Round(($_.Size - $_.SizeRemaining)/1GB, 2)}}, @{Name="UsedPercentage";Expression={[math]::Round((($_.Size - $_.SizeRemaining)/$_.Size)*100, 2)}} | Format-Table -AutoSize | Out-String
+      register: drive_info
+
+    - name: Display drive information
+      debug:
+        msg: "{{ drive_info.stdout }}"
+
+    # Step 12: Run chef-client from Task Scheduler
+    - name: Run chef-client from Task Scheduler
+      win_shell: |
+        schtasks /Run /TN "chef-client"
+      register: chef_client_output
+      failed_when: "'ERROR' in chef_client_output.stdout or chef_client_output.rc != 0"
+
+    - name: Confirm chef-client run completion
+      debug:
+        msg: >
+          Chef-client task triggered successfully via Task Scheduler.
+          Output:
+          {{ chef_client_output.stdout }}

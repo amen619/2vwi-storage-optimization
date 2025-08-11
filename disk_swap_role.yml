@@ -1,0 +1,5 @@
+---
+- name: Disk Swap Role
+  hosts: all
+  roles:
+    - diskswap

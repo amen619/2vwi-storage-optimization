@@ -1,0 +1,97 @@
+---
+- name: Initialize disks dynamically
+  vars:
+    dest_disk_letter:
+      dest_disk1: U
+      dest_disk2: V
+      dest_disk3: W  # Define the input variable for testing as a dictionary
+  block:
+    - name: Get all raw disks (empty and uninitialized)
+      win_shell: |
+        Get-Disk | Where-Object { $_.PartitionStyle -eq 'RAW' } | 
+        Select-Object Number | ConvertTo-Json -Depth 2
+      register: raw_disks
+
+    - name: Debug raw disks
+      debug:
+        var: raw_disks.stdout
+
+    - name: Parse raw disk information
+      set_fact:
+        raw_disk_info: "{{ raw_disks.stdout | from_json }}"
+      when: raw_disks.stdout is string and raw_disks.stdout | length > 0
+
+    - name: Ensure raw_disk_info contains valid data
+      fail:
+        msg: "No valid raw disk information found. Ensure raw disks are attached to the server."
+      when: raw_disk_info is not defined or raw_disk_info | length == 0
+
+    - name: Extract raw disk numbers
+      set_fact:
+        raw_disk_numbers: >
+          {{
+            [raw_disk_info.Number] if raw_disk_info is mapping else
+            (raw_disk_info | map(attribute='Number') | list)
+          }}
+
+    - name: Debug raw disk numbers
+      debug:
+        msg: "Raw disk numbers: {{ raw_disk_numbers }}"
+
+    - name: Fail if no raw disks are found
+      fail:
+        msg: "No raw disks found to initialize. Stopping playbook execution."
+      when: raw_disk_numbers | length == 0
+
+    - name: Define drive letters for raw disks
+      set_fact:
+        drive_letters: "{{ ['U', 'V', 'W', 'X', 'Y'][:raw_disk_numbers | length] }}"
+
+    - name: Map raw disks to drive letters
+      set_fact:
+        disk_to_drive_map: "{{ raw_disk_numbers | zip(drive_letters) | list }}"
+
+    - name: Debug disk-to-drive mapping
+      debug:
+        msg: "Disk-to-drive mapping: {{ disk_to_drive_map }}"
+
+    - name: Clear read-only attribute on disks
+      win_shell: |
+        Get-Disk -Number {{ item.0 }} | Set-Disk -IsReadOnly $false
+      loop: "{{ disk_to_drive_map }}"
+      loop_control:
+        label: "Disk {{ item.0 }}"
+
+    - name: Initialize the disks
+      win_command: powershell.exe Initialize-Disk -Number {{ item.0 }} -PartitionStyle GPT
+      loop: "{{ disk_to_drive_map }}"
+      loop_control:
+        label: "Disk {{ item.0 }}"
+
+    - name: Create a primary partition and assign drive letter
+      community.windows.win_partition:
+        drive_letter: "{{ item.1 }}"
+        disk_number: "{{ item.0 }}"
+        partition_size: -1
+        state: present
+      loop: "{{ disk_to_drive_map }}"
+      loop_control:
+        label: "Disk {{ item.0 }} -> Drive {{ item.1 }}"
+
+    - name: Format the partition with NTFS
+      win_shell: |
+        Format-Volume -DriveLetter {{ item.1 }} -FileSystem NTFS -NewFileSystemLabel "Data" -Confirm:$false
+      loop: "{{ disk_to_drive_map }}"
+      loop_control:
+        label: "Drive {{ item.1 }}"
+
+    - name: Define source and destination drives
+      set_fact:
+        source_drives: "{{ source_disk_letter.values() | list }}"  # Use source_disk_letter for source drives (D, E)
+        destination_drives: "{{ drive_letters }}"  # Use drive_letters for destination drives (U, V)
+
+    - name: Debug source and destination drives
+      debug:
+        msg: >
+          Source Drives: {{ source_drives }}
+          Destination Drives: {{ destination_drives }}

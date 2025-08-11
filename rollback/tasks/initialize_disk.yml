@@ -1,0 +1,48 @@
+---
+- name: Initialize a disk
+  block:
+    - name: Clear read-only attribute on disk number 2
+      win_shell: |
+        Get-Disk -Number 2 | Set-Disk -IsReadOnly $false
+      register: clear_readonly_result
+
+    - name: Debug clear_readonly_result
+      debug:
+        var: clear_readonly_result
+
+    - name: Check if new drive exists
+      win_shell: |
+        Get-Disk | Where-Object { $_.Number -eq 2 -and $_.PartitionStyle -eq 'RAW' }
+      register: new_drive_check
+
+    - name: Initialise new drives
+      win_command: powershell.exe Initialize-Disk -Number 2 -PartitionStyle GPT
+      when: new_drive_check.stdout != ''
+      register: initialise_output
+
+    - name: Create partition and assign drive letter Y
+      community.windows.win_partition:
+        drive_letter: Y
+        disk_number: 2
+        partition_size: -1
+        state: present
+
+    - name: Format the partition with NTFS
+      win_shell: |
+        Format-Volume -DriveLetter Y -FileSystem NTFS -NewFileSystemLabel "Data" -Confirm:$false
+      register: format_partition_result
+
+    - name: Display partition details
+      win_shell: |
+        Get-Partition -DiskNumber 2 | Select-Object PartitionNumber, DriveLetter, Size | ConvertTo-Json
+      register: partition_details
+
+    - name: Debug partition details
+      debug:
+        var: partition_details.stdout_lines
+    - name: Create a file under Y drive to mark completion
+      win_shell: |
+        echo "Robocopy completed successfully" > Y:\completed_marker.txt
+      args:
+        executable: cmd
+      register: create_marker_result

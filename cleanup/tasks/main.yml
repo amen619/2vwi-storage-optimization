@@ -1,0 +1,59 @@
+---
+- name: Robocopy entire drive with polling
+  block:
+    - name: Initialize a disk
+      include_tasks: initialize_disk.yml
+      register: initialize_disk_result
+
+    - name: Check if the destination drive exists
+      win_shell: |
+        if (Test-Path Y:\) {
+          Write-Host "Drive Y exists."
+        } else {
+          Write-Host "Drive Y does not exist."
+        }
+      register: check_drive_result
+
+    - name: Fail if destination drive does not exist
+      fail:
+        msg: "Destination drive Y: does not exist. Aborting playbook execution."
+      when: check_drive_result.stdout is not search("Drive Y exists.")
+
+    - name: Start Robocopy from source to destination
+      win_shell: |
+        Robocopy.exe D:\ Y:\ /MIR /COPYALL /R:3 /W:10 /Z /ETA /LOG:C:\robocopy.log
+        echo completed > Y:\completed_marker.txt
+      args:
+        executable: cmd
+      register: robocopy_result
+      async: 7200  # Allow up to 2 hour for Robocopy to complete
+      poll: 0
+
+    - name: Debug Robocopy result
+      debug:
+        var: robocopy_result
+
+    - name: Poll for Robocopy completion
+      win_shell: |
+        cmd.exe /c "if exist Y:\completed_marker.txt (
+          echo completed
+        ) else (
+          echo in_progress
+        )"
+      register: poll_result
+      until: poll_result.stdout is defined and 'completed' in poll_result.stdout
+      retries: 5
+      delay: 20
+
+    - name: Debug poll_result
+      debug:
+        var: poll_result
+
+    - name: Display Robocopy Job completion message
+      debug:
+        msg: "Robocopy Job completed successfully."
+
+  rescue:
+    - name: Handle Robocopy errors
+      debug:
+        msg: "An error occurred during Robocopy execution."

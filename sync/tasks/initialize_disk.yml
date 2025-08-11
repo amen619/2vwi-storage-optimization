@@ -1,0 +1,117 @@
+---
+- name: Initialize disks dynamically
+  block:
+    - name: Validate source and destination drives
+      fail:
+        msg: "Source or destination drives are not defined. Ensure they are set in the inventory."
+      when: source_disk_letter is not defined or dest_disk_letter is not defined
+
+    - name: Get all raw disks (empty and uninitialized)
+      win_shell: |
+        Get-Disk | Where-Object { $_.PartitionStyle -eq 'RAW' } | 
+        Select-Object Number | ConvertTo-Json -Depth 2
+      register: raw_disks
+
+    - name: Debug raw disks
+      debug:
+        var: raw_disks.stdout
+
+    - name: Parse raw disk information
+      set_fact:
+        raw_disk_info: "{{ raw_disks.stdout | from_json }}"
+      when: raw_disks.stdout is string and raw_disks.stdout | length > 0
+
+    - name: Ensure raw_disk_info contains valid data
+      fail:
+        msg: "No valid raw disk information found. Ensure raw disks are attached to the server."
+      when: raw_disk_info is not defined or raw_disk_info | length == 0
+
+    - name: Extract raw disk numbers
+      set_fact:
+        raw_disk_numbers: >
+          {{
+            [raw_disk_info.Number] if raw_disk_info is mapping else
+            (raw_disk_info | map(attribute='Number') | list)
+          }}
+
+    - name: Debug raw disk numbers
+      debug:
+        msg: "Raw disk numbers: {{ raw_disk_numbers }}"
+
+    - name: Fail if no raw disks are found
+      fail:
+        msg: "No raw disks found to initialize. Stopping playbook execution."
+      when: raw_disk_numbers | length == 0
+
+    - name: Exclude source drive letter from destination drive letters
+      set_fact:
+        available_drive_letters: "{{ [dest_disk_letter] | difference([source_disk_letter]) }}"
+
+    - name: Debug available drive letters
+      debug:
+        msg: "Available drive letters: {{ available_drive_letters }}"
+
+    - name: Define drive letters for raw disks
+      set_fact:
+        drive_letters: "{{ available_drive_letters[:raw_disk_numbers | length] }}"
+
+    - name: Map raw disks to drive letters
+      set_fact:
+        disk_to_drive_map: "{{ raw_disk_numbers | zip(drive_letters) | list }}"
+
+    - name: Debug disk-to-drive mapping
+      debug:
+        msg: "Disk-to-drive mapping: {{ disk_to_drive_map }}"
+
+    - name: Clear read-only attribute on disks
+      win_shell: |
+        Get-Disk -Number {{ item.0 }} | Set-Disk -IsReadOnly $false
+      loop: "{{ disk_to_drive_map }}"
+      loop_control:
+        label: "Disk {{ item.0 }}"
+
+    - name: Initialize the disks
+      win_command: powershell.exe Initialize-Disk -Number {{ item.0 }} -PartitionStyle GPT
+      loop: "{{ disk_to_drive_map }}"
+      loop_control:
+        label: "Disk {{ item.0 }}"
+
+    - name: Create a primary partition and assign drive letter
+      community.windows.win_partition:
+        drive_letter: "{{ item.1 }}"
+        disk_number: "{{ item.0 }}"
+        partition_size: -1
+        state: present
+      loop: "{{ disk_to_drive_map }}"
+      loop_control:
+        label: "Disk {{ item.0 }} -> Drive {{ item.1 }}"
+
+    # Step: Get allocation unit size from source disk
+    - name: Get allocation unit size from source disk
+      win_shell: |
+        $drive = "{{ source_disk_letter.values() | list | first }}"
+        $vol = Get-CimInstance -ClassName Win32_Volume | Where-Object { $_.DriveLetter -eq ($drive + ":") }
+        if ($vol -and $vol.BlockSize -in 4096,65536) { $vol.BlockSize } else { 4096 }
+      register: source_allocation_unit_size
+
+    - name: Set allocation unit size fact
+      set_fact:
+        allocation_unit_size: "{{ source_allocation_unit_size.stdout | int }}"
+
+    - name: Format the partition with NTFS and allocation unit size from source
+      win_shell: |
+        Format-Volume -DriveLetter {{ item.1 }} -FileSystem NTFS -NewFileSystemLabel "Data" -AllocationUnitSize {{ allocation_unit_size }} -Confirm:$false -ErrorAction Stop
+      loop: "{{ disk_to_drive_map }}"
+      loop_control:
+        label: "Drive {{ item.1 }}"
+
+    - name: Define source and destination drives
+      set_fact:
+        source_drives: "{{ source_disk_letter }}"
+        destination_drives: "{{ drive_letters }}"
+
+    - name: Debug source and destination drives
+      debug:
+        msg: >
+          Source Drives: {{ source_drives }}
+          Destination Drives: {{ destination_drives }}

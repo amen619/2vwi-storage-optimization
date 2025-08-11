@@ -1,0 +1,20 @@
+---
+- name: List drives on Windows machine
+  block:
+    - name: Get all disk information excluding C drive
+      win_shell: |
+        Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -ne "C" } | 
+        Select-Object Name, @{Name="UsedGB";Expression={[math]::Round($_.Used/1GB, 2)}}, 
+        @{Name="FreeGB";Expression={[math]::Round($_.Free/1GB, 2)}}, 
+        @{Name="SizeGB";Expression={[math]::Round(($_.Used + $_.Free)/1GB, 2)}} | 
+        ConvertTo-Json -Depth 2
+      register: disk_info
+    - name: Debug raw disk_info.stdout
+      debug:
+        var: disk_info.stdout
+    - name: Parse disk information
+      set_fact:
+        disk_data: "{{ disk_info.stdout | from_json }}"
+    - name: Display disk information
+      debug:
+        var: disk_data

@@ -1,0 +1,13 @@
+---
+- name: Manage Windows drives
+  block:
+    - name: Calculate new disk sizes with 20% more disk space
+      set_fact:
+        new_disk_sizes: "{{ (disk_data.SizeGB | float) * 1.20 | round(2) }}"
+    - name: Debug parsed disk_data
+      debug:
+        var: disk_data
+        
+    - name: Display new disk sizes
+      debug:
+        var: new_disk_sizes

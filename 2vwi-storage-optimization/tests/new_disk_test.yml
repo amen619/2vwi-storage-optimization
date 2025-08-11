@@ -1,0 +1,35 @@
+---
+- name: Manage Windows drives
+  block:
+    - name: Check Ansible version
+      debug:
+        msg: "Ansible version: {{ ansible_version.full }}"
+
+    - name: Check Jinja2 version
+      debug:
+        msg: >
+          {{
+            lookup('pipe', 'python -c "import jinja2; print(jinja2.__version__)"')
+          }}
+
+    - name: Calculate used sizes from drives_info
+      set_fact:
+        used_sizes: >
+          {{
+            [drives_info.UsedGB] if drives_info is mapping else []
+          }}
+
+    - name: Debug used_sizes
+      debug:
+        var: used_sizes
+
+    - name: Calculate new disk sizes with 20% extra space
+      set_fact:
+        new_disk_sizes: >
+          {{
+            used_sizes | map('float') | map('int', attribute='* 1.2') | list
+          }}
+
+    - name: Debug new_disk_sizes
+      debug:
+        var: new_disk_sizes

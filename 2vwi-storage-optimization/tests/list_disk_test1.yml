@@ -1,0 +1,29 @@
+---
+- name: Gather disk information excluding C drive
+  hosts: windows
+  tasks:
+    - name: Gather disk facts
+      win_disk_facts:
+
+    - name: Filter disks and store information
+      set_fact:
+        disk_info: "{{ ansible_devices | selectattr('partitions', 'selectattr', 'is_primary', true) | selectattr('mount_point', 'ne', 'C:') | map(attribute='partitions') | list | map('flatten') }}"
+
+    - name: Check primary partitions count
+      fail:
+        msg: "Disk {{ item }} has more than one primary partition. Stopping playbook."
+      when: "{{ disk_info | selectattr('is_primary', true) | length > 1 }}"
+      loop: "{{ disk_info }}"
+
+    - name: Store disk information in variables
+      set_fact:
+        drive_letters: "{{ disk_info | map(attribute='mount_point') | list }}"
+        used_gb: "{{ disk_info | map(attribute='used') | list }}"
+        size_gb: "{{ disk_info | map(attribute='size') | list }}"
+
+    - name: Display collected disk information
+      debug:
+        msg:
+          - "Drive Letters: {{ drive_letters }}"
+          - "Used GB: {{ used_gb }}"
+          - "Size GB: {{ size_gb }}"

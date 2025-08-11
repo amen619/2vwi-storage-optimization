@@ -1,0 +1,20 @@
+---
+- name: List Available Drives on Windows Servers
+  block:
+    - name: Check if Failover Cluster feature is installed
+      win_feature:
+        name: Failover-Clustering
+        state: present
+      register: cluster_feature
+
+    - name: Stop playbook if Failover Cluster is installed
+      assert:
+        that:
+          - cluster_feature.installed == false
+        fail_msg: "Failover Cluster Role is installed. Stopping the playbook."
+
+    - name: Create a folder under temp directory
+      win_file:
+        path: C:\temp\Ansible
+        state: directory
+      when: cluster_feature.features[0].state != "present"        # Adjust based on the actual structure

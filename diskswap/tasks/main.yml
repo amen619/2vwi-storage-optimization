@@ -1,0 +1,9 @@
+---
+- name: Fail if source_disk_letter is not provided
+  fail:
+    msg: "Source filesystem is not provided. Ensure source_disk_letter is defined in the inventory."
+  when: source_disk_letter is not defined
+
+- name: Include disk_swap tasks if source_disk_letter is provided
+  include_tasks: disk_swap.yml
+  when: source_disk_letter is defined

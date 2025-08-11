@@ -1,0 +1,252 @@
+---
+# Playbook: Delta Sync Task
+# Purpose: Perform final Robocopy jobs on data disks, manage services, and ensure SAS processes and services are stopped.
+- name: Run final robocopy jobs on data disk
+  block:
+    # 1. Validate source and destination drives
+    - name: Validate source and destination drives
+      fail:
+        msg: "Source or destination drives are not defined. Ensure they are set in the inventory."
+      when: source_disk_letter is not defined or dest_disk_letter is not defined
+
+    # 2. Convert source and destination disk letters to lists
+    - name: Convert source_disk_letter and dest_disk_letter to lists if they are strings
+      set_fact:
+        source_drives: >
+          {{
+            [source_disk_letter] if source_disk_letter is string else
+            source_disk_letter.values() | map('regex_replace', '^', '') | list
+          }}
+        destination_drives: >
+          {{
+            [dest_disk_letter] if dest_disk_letter is string else
+            dest_disk_letter.values() | map('regex_replace', '^', '') | list
+          }}
+
+    # 3. Debug source and destination drives
+    - name: Debug source and destination drives
+      debug:
+        msg: >
+          Source Drives: {{ source_drives }}
+          Destination Drives: {{ destination_drives }}
+
+    # 4. Import common services from an external file
+    - name: Import common services from external file
+      ansible.builtin.include_vars:
+        file: common_services.yml
+
+    # 5. Ensure common_services is defined
+    - name: Ensure common_services is defined
+      set_fact:
+        common_services: "{{ common_services | default([]) }}"
+
+    # 6. Debug common services
+    - name: Debug common services
+      debug:
+        var: common_services
+
+    # 7. Get all running services on the server
+    - name: Get all running services on the server
+      win_shell: |
+        Get-Service | Where-Object { $_.Status -eq 'Running' } | Select-Object -ExpandProperty Name | ConvertTo-Json -Depth 1
+      register: running_services
+
+    # 8. Store running services in a variable
+    - name: Store running services in a variable
+      set_fact:
+        server_running_services: "{{ running_services.stdout | from_json }}"
+
+    # 9. Debug running services
+    - name: Debug running services
+      debug:
+        var: server_running_services
+
+    # 10. Check for any SAS processes running on the server
+    - name: Check for any SAS processes running on the server
+      win_shell: |
+        $sasProcesses = Get-Process -Name sas -ErrorAction SilentlyContinue
+        if ($sasProcesses) {
+          $sasProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host "Stopped SAS processes."
+        } else {
+          Write-Host "No SAS processes were found running on the server."
+        }
+      register: sas_processes
+      ignore_errors: true
+
+    # 11. Debug SAS processes
+    - name: Debug SAS processes
+      debug:
+        msg: >
+          {% if 'No SAS processes were found' in sas_processes.stdout | default('') %}
+          No SAS processes were found running on the server.
+          {% elif sas_processes.stdout | default('') | length > 0 %}
+          SAS processes were stopped successfully.
+          {% else %}
+          No SAS processes were found or stopped.
+          {% endif %}
+
+    # 12. Find uncommon services
+    - name: Find uncommon services that should not be running
+      set_fact:
+        uncommon_services: "{{ server_running_services | difference(common_services) }}"
+
+    # 13. Debug uncommon services
+    - name: Debug uncommon services
+      debug:
+        msg: >
+          The following uncommon services are running on the server and will be stopped: {{ uncommon_services }}
+
+    # 14. Stop uncommon services and ensure they are stopped
+    - name: Stop uncommon services and ensure they are stopped
+      win_shell: |
+        $uncommonServices = @({{ uncommon_services | map('regex_replace', '"', '\"') | map('regex_replace', '^', "'") | map('regex_replace', '$', "'") | join(",") }})
+        foreach ($service in $uncommonServices) {
+          $attempts = 0
+          $maxAttempts = 5
+          $delay = 10
+          while ($attempts -lt $maxAttempts) {
+            try {
+              $serviceStatus = Get-Service -Name $service -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status
+              if ($serviceStatus -eq 'Stopped') {
+                Write-Host "Service $service is already stopped."
+                break
+              } else {
+                Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+                Write-Host "Attempted to stop service: $service"
+              }
+            } catch {
+              Write-Host "WARNING: Could not stop service: $service"
+            }
+            Start-Sleep -Seconds $delay
+            $attempts++
+          }
+          if ($attempts -eq $maxAttempts) {
+            Write-Host "ERROR: Service $service could not be stopped after $maxAttempts attempts."
+          }
+        }
+      register: stop_services_result
+      when: uncommon_services | length > 0
+      ignore_errors: true
+
+    # 15. Check for any SAS services running on the server
+    - name: Check for any SAS services running on the server
+      win_shell: |
+        Get-Service | Where-Object { $_.DisplayName -like "*sas.exe" -and $_.Status -eq "Running" } | Select-Object -ExpandProperty Name | ConvertTo-Json -Depth 1
+      register: sas_services
+
+    # 16. Debug SAS services
+    - name: Debug SAS services
+      debug:
+        msg: >
+          {% if sas_services.stdout | default('') | length == 0 %}
+          No SAS services are running on the server.
+          {% else %}
+          The following SAS services are running on the server: 
+          {{ sas_services.stdout | default('[]') | from_json | join(', ') }}
+          {% endif %}
+
+    # 17. Stop SAS services
+    - name: Stop SAS services
+      win_shell: |
+        $sasServices = {{ sas_services.stdout | default('[]') | from_json }}
+        foreach ($service in $sasServices) {
+          try {
+            Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+            Write-Host "Stopped SAS service: $service"
+          } catch {
+            Write-Host "WARNING: Could not stop SAS service: $service. It might already be stopped."
+          }
+        }
+      when: sas_services.stdout is defined and sas_services.stdout | default('[]') | length > 0
+
+    # 18. Ensure all SAS services and processes are stopped
+    - name: Ensure all SAS services and processes are stopped
+      win_shell: |
+        $sasProcesses = Get-Process | Where-Object { $_.Name -like "*sas*" }
+        $sasServices = Get-Service | Where-Object { $_.DisplayName -like "*sas*" -and $_.Status -eq "Running" }
+        if ($sasProcesses -or $sasServices) {
+          Write-Host "ERROR: Some SAS processes or services are still running."
+          exit 1
+        } else {
+          Write-Host "All SAS processes and services are stopped."
+        }
+      failed_when: false
+
+    # 19. Ensure C:\temp\Robocopy directory exists
+    - name: Ensure C:\temp\Robocopy directory exists
+      win_file:
+        path: 'C:\temp\Robocopy'
+        state: directory
+
+    # 20. Start Robocopy for each source-to-destination pair with retries (excluding symlinks)
+    - name: Get local Windows time for log file
+      win_shell: |
+        Get-Date -Format "yyyyMMdd_HHmmss"
+      register: win_time
+
+    - name: Run Robocopy for each source-to-destination pair (excluding symlinks)
+      win_command: >
+        Robocopy.exe {{ item.0 }}:\ {{ item.1 }}:\ /E /COPYALL /B /Z /R:1 /W:5 /XO /XN /XC /XJ /DCOPY:DAT /XD "$RECYCLE.BIN" "System Volume Information" /LOG:C:\temp\Robocopy\delta_robocopy_result_{{ item.0 }}.txt
+      with_together:
+        - "{{ source_drives }}"
+        - "{{ destination_drives }}"
+      register: robocopy_results
+      retries: 1
+      delay: 300
+      until: robocopy_results is succeeded
+      failed_when: robocopy_results.rc not in [0, 1, 2, 3, 10, 11]
+
+    # 21. Debug Robocopy results
+    - name: Debug Robocopy results
+      debug:
+        msg: |
+          Robocopy completed with return code {{ item.rc }}.
+          Command: {{ item.cmd }}
+          Output: {{ item.stdout }}
+      loop: "{{ robocopy_results.results }}"
+
+    # 22. Recreate all symlinked files and directories from source to destination
+    - name: Recreate all symlinked files and directories from source to destination
+      win_shell: |
+        $source = "{{ item.0 }}:\"
+        $dest = "{{ item.1 }}:\"
+
+        if (-not (Test-Path $dest)) {
+            New-Item -ItemType Directory -Path $dest | Out-Null
+        }
+
+        Get-ChildItem -Path $source -Recurse -Attributes ReparsePoint | ForEach-Object {
+            $linkName = $_.FullName.Substring($source.Length)
+            $linkTarget = (Get-Item $_.FullName).Target
+            if ($linkTarget -is [System.Array]) {
+                $linkTarget = $linkTarget[0]
+            }
+            $destLink = Join-Path $dest $linkName
+            $destDir = Split-Path -Path $destLink -Parent
+
+            if (-not (Test-Path $destDir)) {
+                New-Item -ItemType Directory -Path $destDir | Out-Null
+            }
+
+            if (Test-Path $linkTarget) {
+                try {
+                    New-Item -ItemType SymbolicLink -Path $destLink -Target $linkTarget -Force | Out-Null
+                    Write-Host "Created symlink: $destLink -> $linkTarget"
+                } catch {
+                    Write-Host "Failed to create symlink: $destLink -> $linkTarget"
+                }
+            } else {
+                Write-Host "Skipped symlink: $destLink -> $linkTarget (target does not exist)"
+            }
+        }
+      with_together:
+        - "{{ source_drives }}"
+        - "{{ destination_drives }}"
+      ignore_errors: true
+
+    # 23. Display success message
+    - name: Display success message
+      debug:
+        msg: >
+          Final robocopy jobs completed successfully. Check the log file at the destination drives for details.
